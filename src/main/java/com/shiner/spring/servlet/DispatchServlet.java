@@ -11,11 +11,12 @@ import javax.servlet.http.HttpServletResponse;
 import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.net.URL;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+
+import static com.shiner.spring.util.RequestParamUtils.resolveRequestParam;
 
 public class DispatchServlet extends HttpServlet {
     /**存储找到class的类路径，用于初始化类*/
@@ -24,8 +25,12 @@ public class DispatchServlet extends HttpServlet {
     /**存储实例化后的bean key默认为类名 首字母小写，value为实例化后的对象*/
     private Map<String,Object> beansMap = new HashMap<String,Object>();
 
-    /**URL映射关系*/
-    private Map<String,Object> handleMapping = new HashMap<String,Object>();
+    /**URL映射方法的关系*/
+    private Map<String,Object> methodMapping = new HashMap<String,Object>();
+
+    /**URL对应实体的关系*/
+    private Map<String ,Object> handlerMapping = new HashMap<String,Object>();
+
 
     @Override
     public void init(ServletConfig config) throws ServletException {
@@ -80,25 +85,30 @@ public class DispatchServlet extends HttpServlet {
             try {
                 Class<?> clazz = Class.forName(realClassPath);
                 if(clazz.isAnnotationPresent(Controller.class)){
-                    Controller controller = (Controller) clazz.newInstance();
+                    Object obj = clazz.newInstance();
+                    Controller controller = clazz.getAnnotation(Controller.class);
                     String key = "".equals(controller.value()) ? StringUtils.classNameSplit(realClassPath) : controller.value();
-                    beansMap.put(key,controller);
+                    beansMap.put(key,obj);
                 }else if(clazz.isAnnotationPresent(Autowried.class)){
-                    Autowried autowried = (Autowried) clazz.newInstance();
+                    Object obj = clazz.newInstance();
+                    Autowried autowried = clazz.getAnnotation(Autowried.class);
                     String key = "".equals(autowried.value()) ? StringUtils.classNameSplit(realClassPath) : autowried.value();
-                    beansMap.put(key,autowried);
+                    beansMap.put(key,obj);
                 }else if(clazz.isAnnotationPresent(RequestMapping.class)){
-                    RequestMapping requestMapping = (RequestMapping) clazz.newInstance();
+                    Object obj = clazz.newInstance();
+                    RequestMapping requestMapping = clazz.getAnnotation(RequestMapping.class);
                     String key = "".equals(requestMapping.value()) ? StringUtils.classNameSplit(realClassPath) : requestMapping.value();
-                    beansMap.put(key,requestMapping);
+                    beansMap.put(key,obj);
                 }else if(clazz.isAnnotationPresent(Service.class)){
-                    Service service = (Service) clazz.newInstance();
+                    Object obj = clazz.newInstance();
+                    Service service = clazz.getAnnotation(Service.class);
                     String key = "".equals(service.value()) ? StringUtils.classNameSplit(realClassPath) : service.value();
-                    beansMap.put(key,service);
+                    beansMap.put(key,obj);
                 }else if(clazz.isAnnotationPresent(RequestParam.class)){
-                    RequestParam requestParam = (RequestParam) clazz.newInstance();
+                    Object obj = clazz.newInstance();
+                    RequestParam requestParam = clazz.getAnnotation(RequestParam.class);
                     String key = "".equals(requestParam.value()) ? StringUtils.classNameSplit(realClassPath) : requestParam.value();
-                    beansMap.put(key,requestParam);
+                    beansMap.put(key,obj);
                 }else {
                     continue;
                 }
@@ -123,6 +133,22 @@ public class DispatchServlet extends HttpServlet {
                 Field[] fields = clazz.getDeclaredFields();
                 for(Field field : fields){
                     if(field.isAnnotationPresent(Autowried.class)){
+                        try {
+                            Autowried autowried = field.getAnnotation(Autowried.class);
+                            String key = autowried.value();
+                            //1、通过key 去实例化好的beansMap 里取bean
+                            //2、为了防止字段是private修饰符修饰 需要将其字段的可见性设为true
+                            field.setAccessible(true);
+                            field.set(bean,beansMap.get(key));
+                        } catch (IllegalAccessException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                }
+            }else if(clazz.isAnnotationPresent(Service.class)){
+                Field[] fields = clazz.getDeclaredFields();
+                for(Field field : fields){
+                    if(field.isAnnotationPresent(Service.class)){
                         Autowried autowried = field.getAnnotation(Autowried.class);
                         String key = autowried.value();
                         //1、通过key 去实例化好的beansMap 里取bean
@@ -133,22 +159,8 @@ public class DispatchServlet extends HttpServlet {
                         } catch (IllegalAccessException e) {
                             e.printStackTrace();
                         }
-                    }
-                }
-            }else if(clazz.isAnnotationPresent(Service.class)){
-                Field[] fields = clazz.getDeclaredFields();
-                for(Field field : fields){
-                    if(field.isAnnotationPresent(Service.class)){
-                        Service service = field.getAnnotation(Service.class);
-                        String key = service.value();
-                        //1、通过key 去实例化好的beansMap 里取bean
-                        //2、为了防止字段是private修饰符修饰 需要将其字段的可见性设为true
-                        field.setAccessible(true);
-                        try {
-                            field.set(clazz,beansMap.get(key));
-                        } catch (IllegalAccessException e) {
-                            e.printStackTrace();
-                        }
+                    }else{
+                        continue;
                     }
                 }
             }else{
@@ -163,11 +175,27 @@ public class DispatchServlet extends HttpServlet {
         for(Object bean : beansMap.values()){
             Class<?> clazz = bean.getClass();
             if(clazz.isAnnotationPresent(Controller.class)){
+                //取到声明Controller类上RequestMapping的路径
+                String baseUrl = "";
                 if(clazz.isAnnotationPresent(RequestMapping.class)){
-
+                    baseUrl = clazz.getAnnotation(RequestMapping.class).value();
+                }
+                if(clazz.getDeclaredMethods().length > 0){
+                    Method[] methods = clazz.getDeclaredMethods();
+                    for(Method method : methods){
+                        //判断该类所有方法上是否声明了RequestMapping注解
+                        if(method.isAnnotationPresent(RequestMapping.class)){
+                            String url = method.getAnnotation(RequestMapping.class).value();
+                            methodMapping.put(baseUrl + url,method);
+                            handlerMapping.put(baseUrl + url,bean);
+                        }else {
+                            continue;
+                        }
+                    }
+                }else {
+                    continue;
                 }
             }
-
         }
     }
 
@@ -178,6 +206,26 @@ public class DispatchServlet extends HttpServlet {
 
     @Override
     protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+        //获取访问全路径 例：/demo-mvc/test/insert
+        String uri = req.getRequestURI();
+        //获取项目路径   例：/demo-mvc
+        String context = req.getContextPath();
+        //实际访问Controller的路径是 /test/insert
+        String url = uri.replaceAll(context,"");
 
+        //通过反射调用方法
+        Method method = (Method) methodMapping.get(url);
+
+        //获取URL对应的实体类对象
+        Object obj =  handlerMapping.get(url);
+        try {
+            method.invoke(obj.getClass().newInstance(),resolveRequestParam(method,req,resp));
+        } catch (IllegalAccessException e) {
+            e.printStackTrace();
+        } catch (InvocationTargetException e) {
+            e.printStackTrace();
+        } catch (InstantiationException e) {
+            e.printStackTrace();
+        }
     }
 }
